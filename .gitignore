@@ -1,0 +1,9 @@
+target/
+.idea/
+.vscode/
+.DS_Store
+*.class
+*.jar
+*.tbr
+*.tmp
+*.log
