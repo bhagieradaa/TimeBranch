@@ -1,78 +1,55 @@
 # TimeBranch
 
-**TimeBranch** is a Java 17 desktop application for learning version control and file recovery. It is **not Git itself**. Edit files, save immutable snapshots, branch, compare versions, restore earlier versions, and recover deleted source files. Optional GitHub cloud backup stores your complete workspace in a private repository.
+TimeBranch is a JavaFX desktop app for learning local version control. Edit text and source files, save immutable snapshots, compare versions, and recover files from committed history.
 
-## Requirements
-- **JDK 17+**
-- **Apache Maven 3.9+** (internet required on the first run to download JavaFX dependencies)
+## Install and run
 
-## Run on your Mac in Terminal
+1. Install a JDK 17 or later and Apache Maven 3.9 or later. Check your setup with `java -version` and `mvn -version`.
+2. Clone the repository and start the app from the project directory. Maven downloads the JavaFX dependencies on the first run. GitHub may ask you to authenticate to clone a private repository.
 
 ```bash
 git clone https://github.com/bhagieradaa/TimeBranch.git
 cd TimeBranch
-mvn clean javafx:run
+mvn javafx:run
 ```
 
-Your repository is private, so GitHub may require authentication when cloning. If Maven is missing and Homebrew is installed, run `brew install maven`. Verify with `java -version` and `mvn -version`.
+## Screenshots
+
+The screenshots show the same sample workspace in both themes. The Diff tab highlights additions and removals while the dashboard shows the active branch, working-tree status, and commit history.
+
+| Light mode | Dark mode |
+| --- | --- |
+| ![TimeBranch in light mode with a working-tree diff](docs/images/dashboard-light.png) | ![TimeBranch in dark mode with the same diff](docs/images/dashboard-dark.png) |
 
 ## Features
-- Use **+** in the Explorer to create files, **⇧** to import files.
-- Edit in the JavaFX editor; workspace edits are saved locally.
-- Click **Save version**, add a message, then save new versions as you change code.
-- Click **Compare** and choose FROM, TO and file. Lines prefixed with **+** were added; lines prefixed with **-** were removed.
-- Create branches with the **+** in the Branches area; switch from the dropdown.
-- Select a snapshot and click **Restore selected**. Earlier history remains intact.
-- Delete a file and use **Recover deleted file** to retrieve the latest snapshotted copy.
-- Export source files to your computer for compilation.
 
-TimeBranch edits and versions code; it **does not execute arbitrary Java source inside the editor**. After exporting `Main.java`, run `java Main.java` in Terminal.
+- **Workspace editing.** Create, rename, delete, and import UTF-8 files from the repository sidebar. Undo and Redo apply to local workspace changes.
+- **Commit History.** Commit saves a snapshot of all current files. History shows sequential labels such as **Version 1** and **Version 2**. Branch HEAD identifies the active branch’s latest snapshot, and the working-tree status and changed-file count compare the current files against it.
+- **Diff and Compare Versions.** Inspect a working-tree or commit diff, including added or deleted files and line-ending changes. Use **Compare versions** to choose any two snapshots and a file.
+- **Branch management.** Create a branch from the current commit and switch branches using the dropdown. **Delete Branch** protects `main`, keeps shared commits, removes unreachable commits, and restores the committed `main` workspace. Operations that discard uncommitted changes ask for confirmation.
+- **Revert and Delete Version.** Revert restores files from the active branch’s history without creating a new commit. Delete Version removes an unshared branch-tip snapshot with no children, moves HEAD back to its parent, and keeps your working files. The initial version is protected.
+- **Recycle Bin.** Recover a missing file from the latest snapshot containing it in the active branch’s history.
+- **Export.** Export the selected file or use **Export All Files** to write the current workspace to a fresh `TimeBranchProject` folder. Bulk export leaves existing destinations intact.
+- **Light and dark themes.** Switch themes from the top bar.
 
-## Optional GitHub cloud backup
+## Local storage
 
-1. Create a **separate private GitHub repository** for backups.
-2. Generate a fine-grained GitHub personal access token restricted to that repository with **Contents: Read and write** permission.
-3. Open **Cloud settings** and enter the backup repository owner, name and token.
-4. Choose **Cloud backup** to upload a complete snapshot to `timebranch-backups/workspace.tbr`.
-5. On another computer, enter the same settings and select **Cloud restore**. Confirm replacement of the local workspace.
+The workspace is stored at `~/.timebranch/workspace.tbr`. TimeBranch validates the history and file data when loading, uses a lock to prevent simultaneous writes from two running copies, and retains working files across restarts. When opening an older workspace with orphaned commits, it saves a backup beside the workspace before removing the unreachable snapshots. Surviving revisions keep their internal IDs.
 
-Cloud backup is **manual**, not continuously synced; snapshots do not automatically upload. Only claim cloud recovery for versions actually uploaded before data loss. The token remains in application memory, not in a local file. Never share tokens or commit them. TimeBranch does not encrypt the cloud snapshot end-to-end. Use a private backup repository. GitHub history can retain earlier backups.
+## Data structures and algorithms
 
-## Local data
+| Implementation | Role |
+| --- | --- |
+| General revision tree | Parent and child links represent branching. Reachability from surviving branch heads determines which snapshots to keep. |
+| Custom chained hash table | Looks up revisions by stable internal ID in average constant time. |
+| Custom doubly linked list | Keeps revisions in chronological order, supports newest-first traversal, and allows entries to be unlinked during cleanup. |
+| Custom linked stacks | Track workspace Undo and Redo using working-file snapshots. |
+| Longest common subsequence (LCS) | Aligns lines for diffs within a bounded comparison window. Large windows use positional comparison after matching the common prefix and suffix. |
 
-Your local workspace is stored at `~/.timebranch/workspace.tbr`. Keep a copy when upgrading from old projects. This new app does not read the previous Swing `repository.dat` format.
-
-## Data structures
-
-| Structure | Use | Complexity |
-|---|---|---|
-| General revision tree | Branch history | O(1) amortized to append child |
-| Custom chained hash table | Version lookup by ID | O(1) average, O(n) worst |
-| Doubly linked list | Chronological versions | O(1) append, O(n) traversal |
-| Linked stacks | Undo / redo | O(1) push/pop plus snapshot copy |
-| Arrays and LCS | Compare source lines | O(nm) for files within threshold |
-
-Immutable full-file snapshots copy content, so this is an educational VCS rather than optimized Git.
-
-## Testing
+## Verify
 
 ```bash
-mvn test
+mvn clean verify
 ```
 
-GitHub Actions builds and runs unit tests on Java 17 on each push. This initial release does **not** include GUI end-to-end tests or tests against live GitHub backup credentials.
-
-## Project structure
-
-```text
-src/main/java/dev/timebranch/TimeBranchApp.java
-src/main/java/dev/timebranch/core/VersionRepository.java
-src/main/java/dev/timebranch/core/DiffUtil.java
-src/main/java/dev/timebranch/cloud/GitHubBackup.java
-src/main/resources/styles/timebranch.css
-src/test/java/dev/timebranch/core/VersionRepositoryTest.java
-.github/workflows/build.yml
-pom.xml
-```
-
-Do not launch the old Swing JAR for this version. Use `mvn javafx:run`.
+The JUnit suite covers file operations, export safety, diffs, branch isolation, version deletion, orphan cleanup, repository consistency, and restart persistence. The JavaFX application and repository engine are under `src/main/java/dev/timebranch/`. The standalone browser demo is under `web/` and uses sample data.

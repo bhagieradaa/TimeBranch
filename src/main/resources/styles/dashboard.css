@@ -60,7 +60,7 @@
     -fx-font-weight: bold;
 }
 .editor-filename { -fx-font-size: 15px; -fx-font-weight: bold; }
-.button, .combo-box, .text-field, .password-field {
+.button, .combo-box, .text-field {
     -fx-background-color: paper;
     -fx-background-insets: 0;
     -fx-background-radius: 0;
@@ -75,7 +75,7 @@
     -fx-cursor: hand;
 }
 .button:hover, .combo-box:hover { -fx-background-color: panel; }
-.button:focused, .combo-box:focused, .text-field:focused, .password-field:focused {
+.button:focused, .combo-box:focused, .text-field:focused {
     -fx-border-color: crimson;
 }
 .button:pressed { -fx-background-color: ink; -fx-text-fill: paper; }
@@ -135,11 +135,13 @@
     -fx-padding: 5 12;
 }
 .revision-id { -fx-font-weight: bold; }
-.diff-context {
+.diff-header {
     -fx-background-color: panel;
     -fx-border-color: ink;
     -fx-border-width: 0 0 2 0;
     -fx-padding: 5 12;
+}
+.diff-context {
     -fx-max-width: infinity;
 }
 .diff-list .list-cell { -fx-padding: 0; }
