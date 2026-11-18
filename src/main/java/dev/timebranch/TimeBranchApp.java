@@ -7,13 +7,11 @@ import dev.timebranch.core.VersionRepository.Revision;
 import javafx.animation.PauseTransition;
 import javafx.application.Application;
 import javafx.application.Platform;
-import javafx.beans.value.ChangeListener;
 import javafx.collections.FXCollections;
 import javafx.geometry.*;
 import javafx.scene.*;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
-import javafx.scene.paint.Color;
 import javafx.stage.*;
 import javafx.util.Duration;
 
@@ -32,16 +30,24 @@ public final class TimeBranchApp extends Application {
     private VersionRepository repo;
     private Stage stage;
     private BorderPane root;
-    private ListView<String> fileList;
+    private TreeView<String> fileTree;
+    private final Set<String> collapsedFolders = new HashSet<>();
+    private ListView<DiffRow> diffList;
+    private TabPane views;
+    private Tab diffTab;
+    private Label diffContext;
+    private boolean darkMode;
+    private record DiffRow(String oldNumber, String newNumber, DiffUtil.Line line) {}
     private ListView<Revision> historyList;
     private ComboBox<String> branches;
     private TextArea editor;
-    private Label title, status, statusDot, branchLabel, changesLabel, fileCounter, historyCounter;
+    private Label title, status, branchLabel, changesLabel, fileCounter, historyCounter;
     private String selectedFile;
     private boolean updating;
     private final PauseTransition saveDelay = new PauseTransition(Duration.millis(750));
     private final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d, h:mm a").withZone(ZoneId.systemDefault());
     private final GitHubBackup cloud = new GitHubBackup();
+    private record CloudTarget(String owner, String repository, String token) {}
     private String cloudOwner, cloudRepo, cloudToken;
 
     public static void main(String[] args) { launch(args); }
@@ -58,11 +64,13 @@ public final class TimeBranchApp extends Application {
         stage.setTitle("TimeBranch — Code, commit, recover");
         root = new BorderPane();
         root.getStyleClass().add("app");
+        darkMode = java.util.prefs.Preferences.userNodeForPackage(TimeBranchApp.class).getBoolean("darkMode", false);
+        if (darkMode) root.getStyleClass().add("dark");
         root.setTop(buildHeader());
         root.setCenter(buildWorkspace());
         root.setBottom(buildStatus());
         Scene scene = new Scene(root, 1470, 920);
-        var resource = getClass().getResource("/styles/timebranch.css");
+        var resource = getClass().getResource("/styles/dashboard.css");
         if (resource != null) scene.getStylesheets().add(resource.toExternalForm());
         stage.setScene(scene);
         stage.setMinWidth(1040);
@@ -71,172 +79,286 @@ public final class TimeBranchApp extends Application {
         refreshAll();
         stage.setOnCloseRequest(event -> { saveDelay.stop(); persist(); });
         stage.show();
-        Platform.runLater(editor::requestFocus);
     }
 
     private Node buildHeader() {
-        Label emblem = label("◈", "brand-icon");
-        Label brand = label("timebranch", "brand");
-        Label subtitle = label("WORKSPACE   /   LOCAL REPOSITORY", "eyebrow");
-        VBox identity = new VBox(3, brand, subtitle);
-        HBox brandGroup = new HBox(13, emblem, identity);
-        brandGroup.setAlignment(Pos.CENTER_LEFT);
-        Label offline = label("●  LOCAL FIRST", "local-pill");
-        Button backup = button("☁  Cloud backup", "secondary-button", this::uploadCloud);
-        Button restore = button("↧  Cloud restore", "ghost-button", this::downloadCloud);
-        Button settings = button("⚙  Cloud settings", "ghost-button", this::cloudSettings);
-        HBox left = new HBox(32, brandGroup, separator(), label("A better way to recover code", "header-caption"));
-        left.setAlignment(Pos.CENTER_LEFT);
-        HBox right = new HBox(11, offline, backup, restore, settings);
-        right.setAlignment(Pos.CENTER_RIGHT);
-        Region grow = new Region(); HBox.setHgrow(grow,Priority.ALWAYS);
-        HBox bar = new HBox(12, left, grow, right);
-        bar.getStyleClass().add("topbar");
-        bar.setAlignment(Pos.CENTER_LEFT);
-        return bar;
-    }
-    private Node buildWorkspace() {
-        HBox workspace = new HBox(0);
-        workspace.getStyleClass().add("workspace");
-        VBox left = buildExplorer();
-        VBox center = buildEditor();
-        VBox right = buildHistory();
-        left.setPrefWidth(275); left.setMinWidth(220); left.setMaxWidth(340);
-        center.setMinWidth(380);
-        HBox.setHgrow(center,Priority.ALWAYS);
-        right.setPrefWidth(335);right.setMinWidth(275);right.setMaxWidth(375);
-        workspace.getChildren().addAll(left, center, right);
-        return workspace;
-    }
-    private VBox buildExplorer() {
-        Label top = label("EXPLORER", "eyebrow");
-        Button add = smallButton("+",this::newFile);
-        Button importFile = smallButton("⇧",this::importFile);
-        HBox head = spaced(top,new HBox(8,add,importFile));
-        head.getStyleClass().add("section-header");
-        fileCounter = label("YOUR FILES", "eyebrow");
-        fileList = new ListView<>();
-        fileList.getStyleClass().add("file-list");
-        fileList.setCellFactory(list -> new ListCell<>() {
-            @Override protected void updateItem(String item,boolean empty) {
-                super.updateItem(item,empty);
-                setText(empty || item == null ? null : iconFor(item) + "  " + item);
-                getStyleClass().remove("file-cell");
-                if (!empty) getStyleClass().add("file-cell");
-            }
-        });
-        fileList.getSelectionModel().selectedItemProperty().addListener((o,oldName,newName) -> openFile(newName));
-        VBox.setVgrow(fileList,Priority.ALWAYS);
-        Button rename = button("Rename", "compact-button",this::renameFile);
-        Button remove = button("Delete", "compact-button danger-button",this::deleteFile);
-        HBox fileActions = new HBox(8,rename,remove);
-        Button export = button("↗  Export selected file", "wide-ghost",this::exportFile);
-        Label branchTitle = label("BRANCHES","eyebrow");
-        Button newBranch = smallButton("+",this::createBranch);
-        HBox branchHead = spaced(branchTitle,newBranch);
+        Label brand = label("TIMEBRANCH", "brand");
         branches = new ComboBox<>();
-        branches.setMaxWidth(Double.MAX_VALUE);
-        branches.valueProperty().addListener((o,a,b) -> {
+        branches.getStyleClass().add("branch-selector");
+        branches.setAccessibleText("Current branch");
+        branches.setPrefWidth(240);
+        branches.valueProperty().addListener((o, a, b) -> {
             if (!updating && b != null && !b.equals(repo.branch())) switchBranch(b);
         });
-        Label branchInfo = label("Keep experiments separate from main.","muted-small");
-        VBox branchArea = new VBox(12,branchHead,branches,branchInfo);
-        branchArea.getStyleClass().add("sidebar-section");
-        VBox bottom = new VBox(8,
-            label("RECOVERY PROTECTION","eyebrow"),
-            label("↺  Snapshots are stored locally","muted-small"),
-            label("☁  Cloud backups are optional","muted-small"));
-        bottom.getStyleClass().add("sidebar-bottom");
-        VBox left = new VBox(12,head,fileCounter,fileList,fileActions,export,new Separator(),branchArea,bottom);
-        left.getStyleClass().add("explorer-panel");
-        return left;
+        Button theme = new Button(darkMode ? "LIGHT MODE" : "DARK MODE");
+        theme.setOnAction(event -> {
+            darkMode = !darkMode;
+            if (darkMode) root.getStyleClass().add("dark");
+            else root.getStyleClass().remove("dark");
+            theme.setText(darkMode ? "LIGHT MODE" : "DARK MODE");
+            java.util.prefs.Preferences.userNodeForPackage(TimeBranchApp.class).putBoolean("darkMode", darkMode);
+        });
+        HBox bar = spaced(brand, new HBox(12, branches, theme));
+        bar.getStyleClass().add("topbar");
+        return bar;
     }
+
+    private Node buildWorkspace() {
+        VBox explorer = buildExplorer();
+        explorer.setPrefWidth(235);
+        explorer.setMinWidth(200);
+        VBox editorPanel = buildEditor();
+        VBox.setVgrow(editorPanel, Priority.ALWAYS);
+        VBox main = new VBox(editorPanel, buildHistory());
+        HBox.setHgrow(main, Priority.ALWAYS);
+        return new HBox(explorer, main);
+    }
+
+    private VBox buildExplorer() {
+        Button add = smallButton("+", this::newFile);
+        add.setAccessibleText("New file");
+        Button importButton = smallButton("⇧", this::importFile);
+        importButton.setAccessibleText("Import file");
+        HBox head = spaced(label("REPOSITORY", "eyebrow"), new HBox(8, add, importButton));
+        head.getStyleClass().add("section-header");
+        fileTree = new TreeView<>();
+        fileTree.getStyleClass().add("file-tree");
+        fileTree.setCellFactory(tree -> new TreeCell<>() {
+            @Override protected void updateItem(String path, boolean empty) {
+                super.updateItem(path, empty);
+                if (empty || path == null) {
+                    setText(null);
+                    return;
+                }
+                String name = path.substring(path.lastIndexOf('/') + 1);
+                setText(getTreeItem().isLeaf() ? "▤  " + name : name + "/");
+            }
+        });
+        fileTree.getSelectionModel().selectedItemProperty().addListener((o, old, item) -> {
+            if (item == null || item.isLeaf()) openFile(item == null ? null : item.getValue());
+        });
+        VBox.setVgrow(fileTree, Priority.ALWAYS);
+
+        Button rename = button("Rename", "compact-button", this::renameFile);
+        Button remove = button("Delete", "danger-button", this::deleteFile);
+        VBox tools = new VBox(8, new HBox(8, rename, remove),
+                button("Export selected file", "wide-button", this::exportFile),
+                button("New branch", "wide-button", this::createBranch),
+                button("Recover deleted file", "wide-button", this::recoverDeleted),
+                button("Cloud settings", "wide-button", this::cloudSettings),
+                button("Cloud restore", "wide-button", this::downloadCloud));
+        tools.getStyleClass().add("sidebar-tools");
+        VBox explorer = new VBox(head, fileTree, tools);
+        explorer.getStyleClass().add("explorer-panel");
+        return explorer;
+    }
+
     private VBox buildEditor() {
-        title = label("Main.java", "editor-filename");
         branchLabel = label("main", "branch-chip");
-        changesLabel = label("No unsaved edits","editor-context");
-        HBox caption = new HBox(11,branchLabel,changesLabel);
-        caption.setAlignment(Pos.CENTER_LEFT);
-        VBox fileIdentity = new VBox(6,title,caption);
-        Button undo = button("↶  Undo","outline-button",() -> {if (repo.undo()) refreshAll();});
-        Button redo = button("↷  Redo","outline-button",() -> {if (repo.redo()) refreshAll();});
-        Button compare = button("⇄  Compare","outline-button",this::compareVersions);
-        Button save = button("+  Save version","primary-button",this::saveVersion);
-        HBox actions = new HBox(8,undo,redo,compare,save);
-        actions.setAlignment(Pos.CENTER_RIGHT);
-        HBox top = spaced(fileIdentity,actions);
-        top.getStyleClass().add("editor-header");
-        Label codeLabel = label("CODE EDITOR","eyebrow");
-        Label hint = label("⌘Z to undo  ·  ⌘S to save a version","muted-small");
-        HBox captionBar = spaced(codeLabel,hint);captionBar.getStyleClass().add("code-caption");
+        changesLabel = label("", "mono");
+        HBox summary = new HBox(
+                summaryCell("BRANCH / HEAD", branchLabel),
+                summaryCell("WORKING TREE", changesLabel));
+        summary.getStyleClass().add("summary");
+
+        Button commit = button("COMMIT", "action-button", this::saveVersion);
+        Button push = button("PUSH", "action-button", this::uploadCloud);
+        push.setTooltip(new Tooltip("Back up the workspace to GitHub"));
+        Button revert = button("REVERT", "action-button danger-button", this::restoreSelected);
+        for (Button action : List.of(commit, push, revert)) {
+            action.setMaxWidth(Double.MAX_VALUE);
+            HBox.setHgrow(action, Priority.ALWAYS);
+        }
+        HBox actions = new HBox(14, commit, push, revert);
+        actions.getStyleClass().add("action-bar");
+
+        title = label("No file selected", "editor-filename");
+        title.setMinWidth(0);
         editor = new TextArea();
         editor.setWrapText(false);
-        editor.setPromptText("Create or select a file to start editing...");
         editor.getStyleClass().add("code-editor");
-        editor.textProperty().addListener((o,previous,current) -> {
+        editor.textProperty().addListener((o, previous, current) -> {
             if (updating || selectedFile == null || !repo.files().containsKey(selectedFile)) return;
             try {
-                repo.editFile(selectedFile,current);
+                repo.editFile(selectedFile, current);
                 updateMeta();
                 saveDelay.playFromStart();
             } catch (Exception e) { error(e); }
         });
-        VBox.setVgrow(editor,Priority.ALWAYS);
-        Label footerTip = label("TIP  •  Save a version before experimenting. Restore any earlier snapshot instantly.","hint-text");
-        VBox footer = new VBox(footerTip);
-        footer.getStyleClass().add("editor-footer");
-        VBox center = new VBox(top,captionBar,editor,footer);
-        center.getStyleClass().add("editor-panel");
-        return center;
+
+        diffContext = label("", "diff-context");
+        Tooltip contextTooltip = new Tooltip();
+        contextTooltip.textProperty().bind(diffContext.textProperty());
+        diffContext.setTooltip(contextTooltip);
+        diffList = newDiffList();
+        VBox diff = new VBox(diffContext, diffList);
+        VBox.setVgrow(diffList, Priority.ALWAYS);
+        diffTab = new Tab("DIFF", diff);
+        views = new TabPane(new Tab("EDIT", editor), diffTab);
+        views.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
+        views.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> refreshDiff());
+        VBox.setVgrow(views, Priority.ALWAYS);
+
+        Button undo = button("Undo", "compact-button", () -> { if (repo.undo()) refreshAll(); });
+        Button redo = button("Redo", "compact-button", () -> { if (repo.redo()) refreshAll(); });
+        Button compare = button("Compare versions", "compact-button", this::compareVersions);
+        HBox fileBar = spaced(title, new HBox(8, undo, redo, compare));
+        fileBar.getStyleClass().add("file-bar");
+        return new VBox(summary, actions, fileBar, views);
     }
+
+    private VBox summaryCell(String caption, Label value) {
+        VBox cell = new VBox(4, label(caption, "eyebrow"), value);
+        cell.getStyleClass().add("summary-cell");
+        if (value == branchLabel) cell.getStyleClass().add("branch-summary");
+        cell.setMaxWidth(Double.MAX_VALUE);
+        HBox.setHgrow(cell, Priority.ALWAYS);
+        return cell;
+    }
+
     private VBox buildHistory() {
-        Label head = label("VERSION HISTORY","eyebrow");
-        historyCounter = label("Saved snapshots","muted-small");
-        VBox heading = new VBox(7,head,historyCounter);
-        Button compare = smallButton("⇄",this::compareVersions);
-        HBox top = spaced(heading,compare);
-        top.getStyleClass().add("history-header");
+        historyCounter = label("", "mono");
+        Button working = button("Working tree", "compact-button", () -> {
+            historyList.getSelectionModel().clearSelection();
+            views.getSelectionModel().select(diffTab);
+        });
+        HBox heading = spaced(new HBox(12, label("COMMIT HISTORY", "eyebrow"), historyCounter), working);
+        heading.getStyleClass().add("history-header");
         historyList = new ListView<>();
+        historyList.setPrefHeight(148);
         historyList.getStyleClass().add("history-list");
         historyList.setCellFactory(list -> new ListCell<>() {
-            @Override protected void updateItem(Revision r,boolean empty) {
-                super.updateItem(r,empty);
+            @Override protected void updateItem(Revision r, boolean empty) {
+                super.updateItem(r, empty);
                 if (empty || r == null) {
-                    setText(null);setGraphic(null);return;
+                    setGraphic(null);
+                    return;
                 }
-                Label name = label("V" + r.id + "   " + r.message,"revision-name");
-                name.setWrapText(true);
-                Label date = label(formatter.format(Instant.ofEpochMilli(r.createdAt)) + "  ·  " + r.branch,"revision-date");
-                Label id = label(r.id == repo.headId() ? "● HEAD":"◦ SNAPSHOT",
-                        r.id == repo.headId() ? "head-pill":"revision-tag");
-                VBox detail = new VBox(8,id,name,date);
-                detail.getStyleClass().add("revision-card");
-                setText(null);setGraphic(detail);
+                Label id = label("V" + r.id, "revision-id");
+                id.setMinWidth(68);
+                Label description = label(r.message, "revision-message");
+                description.setMinWidth(0);
+                description.setMaxWidth(Double.MAX_VALUE);
+                HBox.setHgrow(description, Priority.ALWAYS);
+                String date = formatter.format(Instant.ofEpochMilli(r.createdAt));
+                HBox row = new HBox(12, id, description, label(r.branch + "  ·  " + date, "mono"));
+                row.setAlignment(Pos.CENTER_LEFT);
+                row.prefWidthProperty().bind(widthProperty().subtract(24));
+                setGraphic(row);
             }
         });
-        historyList.setOnMouseClicked(e -> { if(e.getClickCount()==2) restoreSelected(); });
-        VBox.setVgrow(historyList,Priority.ALWAYS);
-        Button restore = button("↺  Restore selected","wide-button",this::restoreSelected);
-        Button recover = button("♻  Recover deleted file","wide-ghost",this::recoverDeleted);
-        Button compareSnapshots = button("⇄  Compare snapshots","wide-ghost",this::compareVersions);
-        VBox recovery = new VBox(10,
-            label("RECOVERY CENTER","eyebrow"),
-            label("A deleted file isn't gone if it was saved in a snapshot.","muted-small"),
-            recover,compareSnapshots);
-        recovery.getStyleClass().add("recovery-card");
-        VBox right = new VBox(top,historyList,restore,recovery);
-        right.getStyleClass().add("history-panel");
-        return right;
+        historyList.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> {
+            if (!updating) {
+                if (b != null) views.getSelectionModel().select(diffTab);
+                refreshDiff();
+            }
+        });
+        VBox history = new VBox(heading, historyList);
+        history.getStyleClass().add("history-panel");
+        return history;
     }
+
     private Node buildStatus() {
-        statusDot = label("●","status-online");
-        status = label("Ready","status-text");
-        fileCounter = label("0 files","status-text");
-        Label mode = label("JAVA 17  •  LOCAL FIRST","status-text");
-        HBox left = new HBox(9,statusDot,status);left.setAlignment(Pos.CENTER_LEFT);
-        HBox right = new HBox(16,fileCounter,mode);right.setAlignment(Pos.CENTER_RIGHT);
-        HBox footer = spaced(left,right);footer.getStyleClass().add("statusbar");
+        status = label("Ready", "mono");
+        fileCounter = label("0 files", "mono");
+        HBox footer = spaced(status, fileCounter);
+        footer.getStyleClass().add("statusbar");
         return footer;
+    }
+
+    private ListView<DiffRow> newDiffList() {
+        ListView<DiffRow> list = new ListView<>();
+        list.getStyleClass().add("diff-list");
+        list.setFixedCellSize(24);
+        list.setCellFactory(view -> new ListCell<>() {
+            private final Label oldNumber = label("", "line-number");
+            private final Label newNumber = label("", "new-number");
+            private final Label code = label("", "diff-code");
+            private final HBox row = new HBox(oldNumber, newNumber, code);
+
+            @Override protected void updateItem(DiffRow item, boolean empty) {
+                super.updateItem(item, empty);
+                getStyleClass().removeAll("added", "removed");
+                if (empty || item == null) {
+                    setGraphic(null);
+                    return;
+                }
+                oldNumber.setText(item.oldNumber());
+                newNumber.setText(item.newNumber());
+                code.setText(item.line().kind() + "  " + item.line().text());
+                if (item.line().kind() == '+') getStyleClass().add("added");
+                if (item.line().kind() == '-') getStyleClass().add("removed");
+                setGraphic(row);
+            }
+        });
+        return list;
+    }
+
+    private void showDiff(ListView<DiffRow> list, String before, String after) {
+        List<DiffUtil.Line> lines;
+        if (before != null && before.equals(after)) {
+            lines = before.lines().map(line -> new DiffUtil.Line(' ', line)).toList();
+        } else if (before == null || after == null) {
+            String existing = before == null ? after : before;
+            char kind = before == null ? '+' : '-';
+            lines = existing == null ? List.of() : existing.lines().map(line -> new DiffUtil.Line(kind, line)).toList();
+        } else {
+            lines = DiffUtil.compare(before, after);
+        }
+        List<DiffRow> rows = new ArrayList<>();
+        int oldNumber = 0;
+        int newNumber = 0;
+        for (DiffUtil.Line line : lines) {
+            String left = line.kind() == '+' ? "" : Integer.toString(++oldNumber);
+            String right = line.kind() == '-' ? "" : Integer.toString(++newNumber);
+            rows.add(new DiffRow(left, right, line));
+        }
+        list.getItems().setAll(rows);
+    }
+
+    private void refreshDiff() {
+        if (historyList == null || views.getSelectionModel().getSelectedItem() != diffTab) return;
+        Revision selected = historyList.getSelectionModel().getSelectedItem();
+        Revision base = selected == null ? repo.revision(repo.headId())
+                : selected.parentId > 0 ? repo.revision(selected.parentId) : null;
+        String before = base == null ? null : base.files.get(selectedFile);
+        String after = (selected == null ? repo.files() : selected.files).get(selectedFile);
+        String context = selected == null ? "WORKING TREE  /  BASE V" + repo.headId()
+                : "COMMIT V" + selected.id + "  /  " + selected.message;
+        diffContext.setText(context + (Objects.equals(before, after) ? "  /  NO CHANGES" : ""));
+        showDiff(diffList, before, after);
+    }
+
+    private void populateTree(String wanted) {
+        TreeItem<String> rootItem = new TreeItem<>("workspace");
+        rootItem.setExpanded(true);
+        Map<String, TreeItem<String>> folders = new HashMap<>();
+        folders.put("", rootItem);
+        TreeItem<String> selected = null;
+        for (String path : new TreeSet<>(repo.files().keySet())) {
+            TreeItem<String> parent = rootItem;
+            for (int slash = path.indexOf('/'); slash >= 0; slash = path.indexOf('/', slash + 1)) {
+                String folderPath = path.substring(0, slash);
+                TreeItem<String> folder = folders.get(folderPath);
+                if (folder == null) {
+                    folder = new TreeItem<>(folderPath);
+                    folder.setExpanded(!collapsedFolders.contains(folderPath)
+                            || (wanted != null && wanted.startsWith(folderPath + "/")));
+                    folder.expandedProperty().addListener((o, a, expanded) -> {
+                        if (expanded) collapsedFolders.remove(folderPath);
+                        else collapsedFolders.add(folderPath);
+                    });
+                    parent.getChildren().add(folder);
+                    folders.put(folderPath, folder);
+                }
+                parent = folder;
+            }
+            TreeItem<String> item = new TreeItem<>(path);
+            parent.getChildren().add(item);
+            if (path.equals(wanted)) selected = item;
+        }
+        fileTree.setRoot(rootItem);
+        if (selected != null) fileTree.getSelectionModel().select(selected);
     }
 
     private void refreshAll() {
@@ -244,24 +366,29 @@ public final class TimeBranchApp extends Application {
         try {
             String wanted = selectedFile != null && repo.files().containsKey(selectedFile)
                     ? selectedFile : repo.files().keySet().stream().findFirst().orElse(null);
-            fileList.setItems(FXCollections.observableArrayList(repo.files().keySet()));
-            fileList.getSelectionModel().select(wanted);
+            populateTree(wanted);
             selectedFile = wanted;
             editor.setDisable(wanted == null);
             editor.setText(wanted == null ? "" : repo.content(wanted));
             branches.setItems(FXCollections.observableArrayList(repo.branches()));
             branches.setValue(repo.branch());
             historyList.setItems(FXCollections.observableArrayList(repo.revisions()));
-            historyList.getSelectionModel().selectFirst();
+            historyList.getSelectionModel().clearSelection();
             updateMeta();
+            refreshDiff();
         } finally { updating = false; }
     }
     private void updateMeta() {
         title.setText(selectedFile == null ? "No file selected" : selectedFile);
-        branchLabel.setText("⑂  " + repo.branch());
-        changesLabel.setText(repo.dirty() ? "●  Changes not versioned" : "✓  Latest snapshot saved");
+        branchLabel.setText(repo.branch() + "  →  V" + repo.headId());
+        Map<String, String> base = repo.revision(repo.headId()).files;
+        Map<String, String> files = repo.files();
+        Set<String> paths = new HashSet<>(base.keySet());
+        paths.addAll(files.keySet());
+        long changed = paths.stream().filter(path -> !Objects.equals(base.get(path), files.get(path))).count();
+        changesLabel.setText(changed == 0 ? "□ CLEAN" : "■ DIRTY  /  " + changed + " CHANGED");
         fileCounter.setText(repo.files().size() + " files");
-        historyCounter.setText(repo.revisions().size() + " total snapshots · V" + repo.headId() + " latest");
+        historyCounter.setText(repo.revisions().size() + " snapshots");
     }
     private void openFile(String name) {
         if (updating) return;
@@ -270,9 +397,10 @@ public final class TimeBranchApp extends Application {
         try { editor.setDisable(name == null); editor.setText(name == null ? "" : repo.content(name)); }
         finally { updating = false; }
         updateMeta();
+        refreshDiff();
     }
     private void persist() {
-        try { repo.save(STATE); setStatus("Saved to " + STATE.getFileName()); }
+        try { repo.save(STATE); }
         catch (Exception e) { setStatus("Local save failed"); error(e); }
     }
     private void setStatus(String msg) { if(status != null) status.setText(msg); }
@@ -315,8 +443,9 @@ public final class TimeBranchApp extends Application {
             String name = file.getName();
             if (repo.files().containsKey(name))
                 throw new IllegalArgumentException("File already exists. Rename it before importing.");
+            String content = Files.readString(file.toPath(), StandardCharsets.UTF_8);
             repo.createFile(name);
-            repo.editFile(name, Files.readString(file.toPath(), StandardCharsets.UTF_8));
+            repo.editFile(name, content);
             selectedFile=name; refreshAll();
         });
     }
@@ -340,8 +469,7 @@ public final class TimeBranchApp extends Application {
     private void createBranch() {
         prompt("Create a branch from V" + repo.headId(),"feature/new-idea")
                 .ifPresent(name -> execute(() -> {
-                    repo.createBranch(name);
-                    repo.checkout(name);
+                    repo.createAndCheckoutBranch(name);
                     refreshAll();setStatus("Created branch " + name);
                 }));
     }
@@ -352,8 +480,8 @@ public final class TimeBranchApp extends Application {
         execute(() -> {repo.checkout(name);selectedFile=null;refreshAll();setStatus("On branch " + name);});
     }
     private void restoreSelected() {
-        Revision r = historyList.getSelectionModel().getSelectedItem();
-        if (r == null) { setStatus("Select a snapshot first.");return; }
+        Revision selected = historyList.getSelectionModel().getSelectedItem();
+        Revision r = selected == null ? repo.revision(repo.headId()) : selected;
         if (!confirm("Restore version V" + r.id + "?",
                 "Replace your working files with this snapshot. The timeline remains unchanged. Save a new version afterward to preserve the recovery.")) return;
         execute(() -> {repo.restoreVersion(r.id);selectedFile=null;refreshAll();setStatus("Restored V"+r.id+" into workspace");});
@@ -393,19 +521,12 @@ public final class TimeBranchApp extends Application {
                 new VBox(6,label("FROM","eyebrow"),from),
                 new VBox(6,label("TO","eyebrow"),to),
                 new VBox(6,label("FILE","eyebrow"),files));
-        TextArea diffArea = new TextArea();
-        diffArea.setEditable(false);diffArea.setWrapText(false);
-        diffArea.getStyleClass().add("diff-area");
-        diffArea.setPrefSize(860,510);
+        ListView<DiffRow> diffArea = newDiffList();
+        diffArea.setPrefSize(860, 510);
         Runnable update = () -> {
-            Revision a = from.getValue(),b = to.getValue();String file=files.getValue();
-            if(a==null || b==null || file==null) return;
-            StringBuilder output = new StringBuilder();
-            output.append("--- V").append(a.id).append("/").append(file).append("\n");
-            output.append("+++ V").append(b.id).append("/").append(file).append("\n\n");
-            for (DiffUtil.Line line:DiffUtil.compare(a.files.getOrDefault(file,""),b.files.getOrDefault(file,"")))
-                output.append(line.kind()).append(' ').append(line.text()).append('\n');
-            diffArea.setText(output.toString());
+            Revision a = from.getValue(), b = to.getValue();
+            String file = files.getValue();
+            if (a != null && b != null && file != null) showDiff(diffArea, a.files.get(file), b.files.get(file));
         };
         from.valueProperty().addListener((o,a,b)->update.run());
         to.valueProperty().addListener((o,a,b)->update.run());
@@ -455,15 +576,16 @@ public final class TimeBranchApp extends Application {
     }
     private void uploadCloud() {
         if(!cloudReady())return;
+        CloudTarget target = new CloudTarget(cloudOwner, cloudRepo, cloudToken);
         byte[] snapshot;
         try { persist(); snapshot=repo.toBytes(); }
         catch(Exception e){error(e);return;}
         setStatus("Uploading backup…");
         CompletableFuture.runAsync(() -> {
             try {
-                cloud.upload(cloudOwner,cloudRepo,cloudToken,snapshot);
+                cloud.upload(target.owner(), target.repository(), target.token(), snapshot);
                 Platform.runLater(() -> info("Cloud backup succeeded",
-                    "A copy of your snapshot is now stored in " + cloudOwner + "/" + cloudRepo
+                    "A copy of your snapshot is now stored in " + target.owner() + "/" + target.repository()
                     + " at " + GitHubBackup.backupPath()));
                 Platform.runLater(() -> setStatus("✓ GitHub cloud backup uploaded"));
             } catch(Exception e) {Platform.runLater(() -> error(e));}
@@ -473,10 +595,11 @@ public final class TimeBranchApp extends Application {
         if(!cloudReady())return;
         if(!confirm("Replace current workspace from cloud?",
                 "This operation replaces the local workspace and history. Export your current files or upload a backup first."))return;
+        CloudTarget target = new CloudTarget(cloudOwner, cloudRepo, cloudToken);
         setStatus("Downloading backup…");
         CompletableFuture.runAsync(() -> {
             try {
-                byte[] bytes=cloud.download(cloudOwner,cloudRepo,cloudToken);
+                byte[] bytes=cloud.download(target.owner(), target.repository(), target.token());
                 VersionRepository recovered=VersionRepository.fromBytes(bytes);
                 Platform.runLater(() -> execute(() -> {
                     repo=recovered;selectedFile=null;refreshAll();setStatus("✓ Cloud workspace restored");
@@ -487,8 +610,7 @@ public final class TimeBranchApp extends Application {
 
     @FunctionalInterface private interface Task {void run() throws Exception;}
     private void execute(Task action) {
-        saveDelay.stop();
-        try { action.run(); persist(); }
+        try { action.run(); saveDelay.stop(); persist(); }
         catch(Exception e) {error(e);}
     }
     private void error(Exception e) {
@@ -505,15 +627,14 @@ public final class TimeBranchApp extends Application {
         alert.setTitle("TimeBranch");alert.setHeaderText(header);alert.showAndWait();
     }
     private void styleDialog(Dialog<?> dialog) {
-        var css=getClass().getResource("/styles/timebranch.css");
+        if (stage.isShowing()) {
+            dialog.initOwner(stage);
+            dialog.initModality(Modality.WINDOW_MODAL);
+        }
+        var css=getClass().getResource("/styles/dashboard.css");
         if(css!=null) dialog.getDialogPane().getStylesheets().add(css.toExternalForm());
         dialog.getDialogPane().getStyleClass().add("timebranch-dialog");
-    }
-    private static String iconFor(String file) {
-        if(file.endsWith(".java"))return "☕";
-        if(file.endsWith(".md"))return "▤";
-        if(file.endsWith(".json"))return "{ }";
-        return "◇";
+        if (darkMode) dialog.getDialogPane().getStyleClass().add("dark");
     }
     private Label label(String text,String css) {Label l=new Label(text);l.getStyleClass().add(css);return l;}
     private Button button(String text,String css,Runnable onClick) {
@@ -521,7 +642,6 @@ public final class TimeBranchApp extends Application {
         b.setOnAction(e->onClick.run());return b;
     }
     private Button smallButton(String text,Runnable action) {return button(text,"icon-button",action);}
-    private Node separator() {Separator sep=new Separator(Orientation.VERTICAL);return sep;}
     private HBox spaced(Node left,Node right) {
         Region gap=new Region();HBox.setHgrow(gap,Priority.ALWAYS);
         HBox h=new HBox(10,left,gap,right);h.setAlignment(Pos.CENTER_LEFT);return h;

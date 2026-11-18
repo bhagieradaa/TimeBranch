@@ -221,6 +221,11 @@ public final class VersionRepository {
         if (heads.containsKey(name)) throw new IllegalArgumentException("Branch already exists.");
         heads.put(name, headId());
     }
+    public void createAndCheckoutBranch(String name) {
+        createBranch(name);
+        currentBranch = name;
+    }
+
     public void checkout(String name) {
         Integer id = heads.get(name);
         if (id == null) throw new IllegalArgumentException("Unknown branch.");

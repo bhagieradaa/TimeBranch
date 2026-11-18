@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TimeBranch</title>
+<link rel="stylesheet" href="dashboard.css">
+<script defer src="dashboard.js"></script>
+</head>
+<body>
+<header class="masthead">
+  <h1>TIMEBRANCH</h1>
+  <div class="controls">
+    <select id="branch" aria-label="Current branch"></select>
+    <button id="theme" type="button" aria-pressed="false">Dark mode</button>
+  </div>
+</header>
+<div class="workspace">
+  <aside aria-labelledby="repository">
+    <h2 id="repository">Repository</h2>
+    <p class="root">timebranch-web/</p>
+    <div id="tree"></div>
+  </aside>
+  <main>
+    <dl class="summary">
+      <div><dt>Branch</dt><dd><span class="stamp" id="active-branch"></span></dd></div>
+      <div><dt>HEAD</dt><dd><span class="stamp">HEAD</span> → <span id="head"></span></dd></div>
+      <div><dt>Status</dt><dd id="status"></dd></div>
+      <div><dt>Changed files</dt><dd id="changed"></dd></div>
+    </dl>
+    <section class="actions" aria-label="Repository actions">
+      <button id="commit" type="button">Commit</button>
+      <button id="push" type="button" title="Download a snapshot of this branch">Push</button>
+      <button id="revert" type="button" class="danger">Revert</button>
+      <div class="totals" id="totals"></div>
+    </section>
+    <p class="notice" id="notice" role="status">Demo workspace · Push downloads a branch snapshot.</p>
+    <section aria-labelledby="path">
+      <div class="diff-meta" id="meta"></div>
+      <div class="file-bar"><h2 id="path"></h2><span id="file-stats"></span></div>
+      <div class="diff-scroll" tabindex="0" aria-label="Unified diff">
+        <table class="diff" aria-label="File changes"><tbody id="diff"></tbody></table>
+      </div>
+    </section>
+    <section class="history" aria-labelledby="history-heading">
+      <div class="history-bar"><h2 id="history-heading">Commit history <span id="history-branch"></span></h2>
+      <label>Show <select id="filter"><option value="all">All commits</option><option value="file">Selected file</option></select></label></div>
+      <div class="history-scroll">
+        <table class="commits">
+          <thead><tr><th>Commit</th><th>Message</th><th>Author</th><th>Date (UTC)</th></tr></thead>
+          <tbody id="history"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+<dialog id="dialog" aria-labelledby="dialog-title" aria-describedby="dialog-description">
+  <form method="dialog">
+    <h2 id="dialog-title"></h2>
+    <p id="dialog-description"></p>
+    <label id="message-label">Commit message <input id="message" maxlength="120"></label>
+    <div class="dialog-actions"><button value="cancel" formnovalidate>Cancel</button><button id="confirm" value="confirm">Confirm</button></div>
+  </form>
+</dialog>
+</body>
+</html>
